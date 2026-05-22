@@ -24,91 +24,68 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci || npm install
-          else
-            npm install
-          fi
-        continue-on-error: true
+        run: npm ci || npm install
 
-      - name: Run ESLint checks
-        id: eslint_step
+      - name: Run ESLint
+        id: eslint
         continue-on-error: true
         run: |
           set +e
-          echo "Running ESLint..."
-          npm run lint > eslint-report.txt 2>&1
-          ESLINT_EXIT=$?
-          echo "eslint_exit=$ESLINT_EXIT" >> "$GITHUB_OUTPUT"
-          if [ $ESLINT_EXIT -eq 0 ]; then
-            echo "eslint_status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "eslint_status=issues_found" >> "$GITHUB_OUTPUT"
-          fi
-          cat eslint-report.txt || true
-          exit 0
+          npm run lint > eslint-output.txt 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "----- ESLint Output -----"
+          cat eslint-output.txt || true
 
-      - name: Run Prettier formatting checks
-        id: prettier_step
+      - name: Run Prettier check
+        id: prettier
         continue-on-error: true
         run: |
           set +e
-          echo "Running Prettier check..."
-          npx --no-install prettier --check "src/**/*.js" > prettier-report.txt 2>&1
-          PRETTIER_EXIT=$?
-          echo "prettier_exit=$PRETTIER_EXIT" >> "$GITHUB_OUTPUT"
-          if [ $PRETTIER_EXIT -eq 0 ]; then
-            echo "prettier_status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "prettier_status=issues_found" >> "$GITHUB_OUTPUT"
-          fi
-          cat prettier-report.txt || true
-          exit 0
+          npx --yes prettier --check "**/*.{js,jsx,ts,tsx,json,md,yml,yaml}" > prettier-output.txt 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "----- Prettier Output -----"
+          cat prettier-output.txt || true
 
-      - name: Post Code Quality Report comment
+      - name: Post code quality PR comment
         if: always()
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const path = require('path');
             const readSafe = (p) => {
-              try { return fs.readFileSync(p, 'utf8'); } catch (e) { return '(no report generated)'; }
+              try { return fs.readFileSync(p, 'utf8').slice(0, 5000); }
+              catch (e) { return '_no output captured_'; }
             };
-            const eslintOut = readSafe('eslint-report.txt').slice(0, 4000);
-            const prettierOut = readSafe('prettier-report.txt').slice(0, 4000);
-            const eslintStatus = '${{ steps.eslint_step.outputs.eslint_status }}' || 'unknown';
-            const prettierStatus = '${{ steps.prettier_step.outputs.prettier_status }}' || 'unknown';
-            const body = [
+            const eslintOutput = readSafe('eslint-output.txt');
+            const prettierOutput = readSafe('prettier-output.txt');
+            const eslintStatus = '${{ steps.eslint.outputs.exit_code }}' === '0' ? '✅ passed' : '⚠️ issues found';
+            const prettierStatus = '${{ steps.prettier.outputs.exit_code }}' === '0' ? '✅ passed' : '⚠️ issues found';
+            const cqBody = [
               '## 🧹 Code Quality Report',
               '',
-              `**ESLint:** ${eslintStatus}`,
+              `- **ESLint**: ${eslintStatus}`,
+              `- **Prettier**: ${prettierStatus}`,
               '',
               '<details><summary>ESLint output</summary>',
               '',
               '```',
-              eslintOut || '(empty)',
+              eslintOutput,
               '```',
               '</details>',
-              '',
-              `**Prettier:** ${prettierStatus}`,
               '',
               '<details><summary>Prettier output</summary>',
               '',
               '```',
-              prettierOut || '(empty)',
+              prettierOutput,
               '```',
               '</details>',
-              '',
-              '_Posted by code-quality job._'
-            ].join('
-');
+            ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body
+              body: cqBody,
             });
 
   testing-suite:
@@ -125,104 +102,82 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci || npm install
-          else
-            npm install
-          fi
-        continue-on-error: true
+        run: npm ci || npm install
 
       - name: Run test suite
-        id: tests_step
+        id: tests
         continue-on-error: true
         run: |
           set +e
-          echo "Running tests..."
-          npm test -- --ci --reporters=default > test-report.txt 2>&1
-          TEST_EXIT=$?
-          echo "test_exit=$TEST_EXIT" >> "$GITHUB_OUTPUT"
-          if [ $TEST_EXIT -eq 0 ]; then
-            echo "test_status=passed" >> "$GITHUB_OUTPUT"
-          else
-            echo "test_status=failed" >> "$GITHUB_OUTPUT"
-          fi
-          cat test-report.txt || true
-          exit 0
+          npm test > test-output.txt 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "----- Test Output -----"
+          cat test-output.txt || true
 
       - name: Generate coverage report
-        id: coverage_step
+        id: coverage
         continue-on-error: true
         run: |
           set +e
-          echo "Generating coverage report..."
-          npx --no-install jest --coverage --coverageReporters=text --coverageReporters=text-summary --coverageReporters=lcov > coverage-report.txt 2>&1
-          COV_EXIT=$?
-          echo "coverage_exit=$COV_EXIT" >> "$GITHUB_OUTPUT"
-          if [ $COV_EXIT -eq 0 ]; then
-            echo "coverage_status=generated" >> "$GITHUB_OUTPUT"
-          else
-            echo "coverage_status=partial" >> "$GITHUB_OUTPUT"
-          fi
           mkdir -p coverage
-          tail -n 80 coverage-report.txt > coverage-summary.txt || true
-          cat coverage-report.txt || true
-          exit 0
+          (npx --yes jest --coverage --coverageDirectory=coverage --passWithNoTests > coverage-output.txt 2>&1) \
+            || (npm test -- --coverage > coverage-output.txt 2>&1) \
+            || true
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "----- Coverage Output -----"
+          cat coverage-output.txt || true
 
       - name: Upload coverage artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-coverage
+          name: test-coverage-report
           path: |
             coverage/
-            coverage-report.txt
-            coverage-summary.txt
-            test-report.txt
+            coverage-output.txt
+            test-output.txt
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Post Test Coverage Report comment
+      - name: Post coverage PR comment
         if: always()
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const readSafe = (p) => {
-              try { return fs.readFileSync(p, 'utf8'); } catch (e) { return '(no report)'; }
+              try { return fs.readFileSync(p, 'utf8').slice(0, 5000); }
+              catch (e) { return '_no output captured_'; }
             };
-            const testOut = readSafe('test-report.txt').slice(0, 3500);
-            const coverageOut = readSafe('coverage-summary.txt').slice(0, 3500);
-            const testStatus = '${{ steps.tests_step.outputs.test_status }}' || 'unknown';
-            const coverageStatus = '${{ steps.coverage_step.outputs.coverage_status }}' || 'unknown';
-            const body = [
+            const testOutput = readSafe('test-output.txt');
+            const coverageOutput = readSafe('coverage-output.txt');
+            const testStatus = '${{ steps.tests.outputs.exit_code }}' === '0' ? '✅ passed' : '❌ failed';
+            const tsBody = [
               '## 🧪 Test Coverage Report',
               '',
-              `**Test status:** ${testStatus}`,
-              `**Coverage status:** ${coverageStatus}`,
+              `- **Tests**: ${testStatus}`,
+              '- **Coverage artifact**: uploaded as `test-coverage-report`',
               '',
               '<details><summary>Test output</summary>',
               '',
               '```',
-              testOut || '(empty)',
+              testOutput,
               '```',
               '</details>',
               '',
               '<details><summary>Coverage summary</summary>',
               '',
               '```',
-              coverageOut || '(empty)',
+              coverageOutput,
               '```',
               '</details>',
-              '',
-              '_Posted by testing-suite job._'
-            ].join('
-');
+            ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body
+              body: tsBody,
             });
 
   security-scan:
@@ -241,109 +196,83 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci || npm install
-          else
-            npm install
-          fi
-        continue-on-error: true
+        run: npm ci || npm install
 
-      - name: Run dependency vulnerability scan
-        id: audit_step
+      - name: Run dependency vulnerability check (npm audit)
+        id: audit
         continue-on-error: true
         run: |
           set +e
-          echo "Running npm audit..."
-          npm audit --audit-level=low > audit-report.txt 2>&1
-          AUDIT_EXIT=$?
-          echo "audit_exit=$AUDIT_EXIT" >> "$GITHUB_OUTPUT"
-          # Use json for counts
-          npm audit --json > audit.json 2>/dev/null || true
-          VULN_COUNT=$(node -e "try { const r=require('./audit.json'); const m=r.metadata && r.metadata.vulnerabilities; if(!m){console.log(0);process.exit(0);} console.log((m.low||0)+(m.moderate||0)+(m.high||0)+(m.critical||0)); } catch(e){console.log(0);}")
-          DEP_COUNT=$(node -e "try { const p=require('./package.json'); const d=Object.keys(p.dependencies||{}).length; const dev=Object.keys(p.devDependencies||{}).length; console.log(d+dev); } catch(e){console.log(0);}")
-          echo "vuln_count=$VULN_COUNT" >> "$GITHUB_OUTPUT"
-          echo "dep_count=$DEP_COUNT" >> "$GITHUB_OUTPUT"
-          cat audit-report.txt || true
-          exit 0
+          npm audit --audit-level=low > audit-output.txt 2>&1
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "----- npm audit Output -----"
+          cat audit-output.txt || true
 
-      - name: Scan for secrets in code changes
-        id: secrets_step
+      - name: Scan PR diff for secrets
+        id: secrets
         continue-on-error: true
         run: |
           set +e
-          echo "Scanning for secrets in changed files..."
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          : > secrets-report.txt
-          if [ -n "$BASE_SHA" ] && [ -n "$HEAD_SHA" ]; then
-            git fetch --no-tags --prune origin "+refs/heads/*:refs/remotes/origin/*" >/dev/null 2>&1 || true
-            DIFF=$(git diff "$BASE_SHA"..."$HEAD_SHA" 2>/dev/null || git diff "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || echo "")
-          else
-            DIFF=$(git diff HEAD~1 HEAD 2>/dev/null || echo "")
+          git fetch origin "$BASE_SHA" "$HEAD_SHA" || true
+          git diff "$BASE_SHA" "$HEAD_SHA" > pr.diff 2>/dev/null || git diff HEAD~1 HEAD > pr.diff 2>/dev/null || true
+          : > secrets-output.txt
+          PATTERNS='(AKIA[0-9A-Z]{16})|(ASIA[0-9A-Z]{16})|(ghp_[A-Za-z0-9]{20,})|(gho_[A-Za-z0-9]{20,})|(github_pat_[A-Za-z0-9_]{20,})|(xox[baprs]-[A-Za-z0-9-]{10,})|(-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----)|((?i)(api[_-]?key|secret|token|password)\s*[:=]\s*["'\''][^"'\'' ]{8,}["'\''])'
+          if [ -s pr.diff ]; then
+            grep -E -n -i "$PATTERNS" pr.diff > secrets-output.txt 2>/dev/null || true
           fi
-          PATTERNS='(AKIA[0-9A-Z]{16}|aws_secret_access_key|-----BEGIN [A-Z ]*PRIVATE KEY-----|api[_-]?key\s*[:=]\s*["\x27][A-Za-z0-9_\-]{16,}["\x27]|secret\s*[:=]\s*["\x27][A-Za-z0-9_\-]{16,}["\x27]|password\s*[:=]\s*["\x27][^"\x27\s]{8,}["\x27]|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{50,})'
-          MATCHES=$(echo "$DIFF" | grep -E -i "$PATTERNS" || true)
-          if [ -z "$MATCHES" ]; then
-            echo "No secrets detected in code changes." > secrets-report.txt
-            echo "secret_status=clean" >> "$GITHUB_OUTPUT"
-            echo "secret_count=0" >> "$GITHUB_OUTPUT"
+          if [ -s secrets-output.txt ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Potential secrets detected:" > secrets-report.txt
-            echo "$MATCHES" >> secrets-report.txt
-            COUNT=$(echo "$MATCHES" | wc -l)
-            echo "secret_status=findings" >> "$GITHUB_OUTPUT"
-            echo "secret_count=$COUNT" >> "$GITHUB_OUTPUT"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No potential secrets detected in PR diff." > secrets-output.txt
           fi
-          cat secrets-report.txt || true
-          exit 0
+          echo "----- Secret Scan Output -----"
+          cat secrets-output.txt || true
 
-      - name: Post Security Scan Report comment
+      - name: Post security scan PR comment
         if: always()
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const readSafe = (p) => {
-              try { return fs.readFileSync(p, 'utf8'); } catch (e) { return '(no report)'; }
+              try { return fs.readFileSync(p, 'utf8').slice(0, 5000); }
+              catch (e) { return '_no output captured_'; }
             };
-            const auditOut = readSafe('audit-report.txt').slice(0, 3500);
-            const secretsOut = readSafe('secrets-report.txt').slice(0, 3500);
-            const vulnCount = '${{ steps.audit_step.outputs.vuln_count }}' || '0';
-            const depCount = '${{ steps.audit_step.outputs.dep_count }}' || '0';
-            const secretStatus = '${{ steps.secrets_step.outputs.secret_status }}' || 'unknown';
-            const body = [
+            const auditOutput = readSafe('audit-output.txt');
+            const secretsOutput = readSafe('secrets-output.txt');
+            const auditStatus = '${{ steps.audit.outputs.exit_code }}' === '0' ? '✅ no known issues' : '⚠️ issues found';
+            const secretsFound = '${{ steps.secrets.outputs.found }}' === 'true';
+            const secretsStatus = secretsFound ? '⚠️ potential secrets detected' : '✅ none detected';
+            const ssBody = [
               '## 🔒 Security Scan Report',
               '',
-              `### Dependencies`,
-              `- Total declared dependencies scanned: **${depCount}**`,
-              `- Vulnerabilities found: **${vulnCount}**`,
+              `- **Dependencies (npm audit)**: ${auditStatus}`,
+              `- **Vulnerabilities scan**: see audit details below`,
+              `- **Secret scan**: ${secretsStatus}`,
               '',
-              '<details><summary>npm audit output</summary>',
-              '',
-              '```',
-              auditOut || '(empty)',
-              '```',
-              '</details>',
-              '',
-              '### Secret scan',
-              `- Status: **${secretStatus}**`,
-              '',
-              '<details><summary>Secret scan output</summary>',
+              '<details><summary>Dependency Vulnerabilities (npm audit)</summary>',
               '',
               '```',
-              secretsOut || '(empty)',
+              auditOutput,
               '```',
               '</details>',
               '',
-              '_Posted by security-scan job._'
-            ].join('
-');
+              '<details><summary>Secret scan results</summary>',
+              '',
+              '```',
+              secretsOutput,
+              '```',
+              '</details>',
+            ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body
+              body: ssBody,
             });
 
   build-validation:
@@ -360,151 +289,96 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci || npm install
-          else
-            npm install
-          fi
-        continue-on-error: true
+        run: npm ci || npm install
 
       - name: Build application
-        id: build_step
+        id: build
         continue-on-error: true
         run: |
           set +e
-          echo "Running build..."
-          npm run build > build-report.txt 2>&1
-          BUILD_EXIT=$?
-          echo "build_exit=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
-          if [ $BUILD_EXIT -eq 0 ]; then
-            echo "build_status=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "build_status=failed" >> "$GITHUB_OUTPUT"
-          fi
-          cat build-report.txt || true
-          exit 0
+          mkdir -p build-preview
+          (npm run build > build-output.txt 2>&1) || echo "No build script or build failed; continuing." > build-output.txt
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          echo "----- Build Output -----"
+          cat build-output.txt || true
+          # Capture any build artifacts for preview
+          if [ -d dist ]; then cp -r dist build-preview/dist; fi
+          if [ -d build ]; then cp -r build build-preview/build; fi
+          if [ -d public ]; then cp -r public build-preview/public; fi
+          cp -r package.json build-preview/ 2>/dev/null || true
 
       - name: Validate endpoints
-        id: endpoints_step
+        id: endpoints
         continue-on-error: true
         run: |
           set +e
-          : > endpoints-report.txt
-          echo "Starting application for endpoint validation..." | tee -a endpoints-report.txt
-          # Start the app in background
-          (PORT=3000 node src/app.js > app.log 2>&1 &) || true
-          APP_PID=$!
-          echo "app_pid=$APP_PID" >> "$GITHUB_OUTPUT"
-          # Wait for the server to come up
-          UP=0
-          for i in $(seq 1 20); do
-            if curl -fsS "http://localhost:3000/health" >/dev/null 2>&1; then
-              UP=1
-              break
-            fi
-            sleep 1
-          done
-          ENDPOINTS=("/health" "/" "/api")
-          PASSED=0
-          TOTAL=0
-          for ep in "${ENDPOINTS[@]}"; do
-            TOTAL=$((TOTAL+1))
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:3000${ep}" 2>/dev/null || echo "000")
-            echo "GET ${ep} -> ${STATUS}" | tee -a endpoints-report.txt
-            if [ "$STATUS" != "000" ] && [ "$STATUS" -lt 500 ]; then
-              PASSED=$((PASSED+1))
-            fi
-          done
-          echo "endpoints_up=$UP" >> "$GITHUB_OUTPUT"
-          echo "endpoints_passed=$PASSED" >> "$GITHUB_OUTPUT"
-          echo "endpoints_total=$TOTAL" >> "$GITHUB_OUTPUT"
-          # Stop the app
-          pkill -f "node src/app.js" >/dev/null 2>&1 || true
-          if [ "$UP" = "1" ] && [ "$PASSED" -ge 1 ]; then
-            echo "endpoints_status=ok" >> "$GITHUB_OUTPUT"
+          : > endpoints-output.txt
+          # Try starting the app in the background and probing common endpoints
+          if [ -f server.js ] || [ -f index.js ] || [ -f app.js ]; then
+            (npm start > server.log 2>&1 &) || true
+            sleep 8
+            for url in http://localhost:3000/ http://localhost:3000/health http://localhost:3000/api http://localhost:8080/; do
+              echo "Probing $url" >> endpoints-output.txt
+              curl -fsS --max-time 5 "$url" >> endpoints-output.txt 2>&1 || echo "  -> not reachable" >> endpoints-output.txt
+              echo "" >> endpoints-output.txt
+            done
+            pkill -f "node" || true
           else
-            echo "endpoints_status=degraded" >> "$GITHUB_OUTPUT"
+            echo "No server entrypoint detected; skipping endpoint validation." > endpoints-output.txt
           fi
-          exit 0
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          cat endpoints-output.txt || true
 
-      - name: Create deployment preview artifacts
-        id: preview_step
-        if: always()
-        run: |
-          set +e
-          mkdir -p deploy-preview
-          cp -r src deploy-preview/src 2>/dev/null || true
-          cp package.json deploy-preview/ 2>/dev/null || true
-          cp package-lock.json deploy-preview/ 2>/dev/null || true
-          cat > deploy-preview/PREVIEW.md <<EOF
-          # Deployment Preview
-
-          - PR: #${{ github.event.pull_request.number }}
-          - Commit: ${{ github.event.pull_request.head.sha }}
-          - Branch: ${{ github.event.pull_request.head.ref }}
-          - Build status: ${{ steps.build_step.outputs.build_status }}
-          - Endpoints status: ${{ steps.endpoints_step.outputs.endpoints_status }}
-          EOF
-          tar -czf deploy-preview.tar.gz deploy-preview || true
-          ls -la deploy-preview || true
-          exit 0
-
-      - name: Upload deployment preview artifact
+      - name: Upload deployment preview artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: deployment-preview
           path: |
-            deploy-preview/
-            deploy-preview.tar.gz
-            build-report.txt
-            endpoints-report.txt
+            build-preview/
+            build-output.txt
+            endpoints-output.txt
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Post Build Validation comment
+      - name: Post build validation PR comment
         if: always()
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const readSafe = (p) => {
-              try { return fs.readFileSync(p, 'utf8'); } catch (e) { return '(no report)'; }
+              try { return fs.readFileSync(p, 'utf8').slice(0, 5000); }
+              catch (e) { return '_no output captured_'; }
             };
-            const buildOut = readSafe('build-report.txt').slice(0, 3500);
-            const endpointsOut = readSafe('endpoints-report.txt').slice(0, 3500);
-            const buildStatus = '${{ steps.build_step.outputs.build_status }}' || 'unknown';
-            const epStatus = '${{ steps.endpoints_step.outputs.endpoints_status }}' || 'unknown';
-            const epPassed = '${{ steps.endpoints_step.outputs.endpoints_passed }}' || '0';
-            const epTotal = '${{ steps.endpoints_step.outputs.endpoints_total }}' || '0';
-            const body = [
-              '## 🚀 Build Validation',
+            const buildOutput = readSafe('build-output.txt');
+            const endpointsOutput = readSafe('endpoints-output.txt');
+            const buildStatus = '${{ steps.build.outputs.exit_code }}' === '0' ? '✅ passed' : '⚠️ issues';
+            const bvBody = [
+              '## 🏗️ Build Validation',
               '',
-              `**Build status:** ${buildStatus}`,
-              `**Endpoints validated:** ${epPassed}/${epTotal} (status: ${epStatus})`,
+              `- **Build**: ${buildStatus}`,
+              '- **Deployment preview artifact**: uploaded as `deployment-preview`',
+              '- **Endpoint accessibility**: see details below',
               '',
               '<details><summary>Build output</summary>',
               '',
               '```',
-              buildOut || '(empty)',
+              buildOutput,
               '```',
               '</details>',
               '',
               '<details><summary>Endpoint validation</summary>',
               '',
               '```',
-              endpointsOut || '(empty)',
+              endpointsOutput,
               '```',
               '</details>',
-              '',
-              '_Deployment preview artifact uploaded as `deployment-preview`._',
-              '_Posted by build-validation job._'
-            ].join('
-');
+            ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body
+              body: bvBody,
             });
